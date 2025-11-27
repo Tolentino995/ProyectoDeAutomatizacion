@@ -1,32 +1,33 @@
+import os
+import time
+import pandas as pd
+from datetime import datetime
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-import time, os
 
 # =============================================
 # CONFIGURACIÓN
 # =============================================
 
-NUMERO_CLIENTE = "10206069501"
+EXCEL_PATH = "Metrogas.xlsx"
 CARPETA_DESCARGAS = r"C:\Users\antho\Downloads\Facturas"
+
 os.makedirs(CARPETA_DESCARGAS, exist_ok=True)
 
 options = webdriver.ChromeOptions()
-options.add_argument("--disable-dev-shm-usage")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-gpu")
 options.add_argument("--start-maximized")
+options.add_argument("--disable-gpu")
 options.add_argument("--disable-infobars")
 
 prefs = {
     "download.default_directory": CARPETA_DESCARGAS,
     "download.prompt_for_download": False,
     "plugins.always_open_pdf_externally": True,
-    "download.directory_upgrade": True,
-    "profile.default_content_settings.popups": 0,
 }
 options.add_experimental_option("prefs", prefs)
 
@@ -34,15 +35,13 @@ driver = webdriver.Chrome(
     service=Service(ChromeDriverManager().install()),
     options=options
 )
-
 wait = WebDriverWait(driver, 30)
 
 # =============================================
-# CLICK SAP UI5
+# CLICK UI5 LOW LEVEL
 # =============================================
 
 def click_ui5(element):
-    """Fuerza el click UI5 a bajo nivel."""
     driver.execute_script("arguments[0].scrollIntoView(true);", element)
     time.sleep(0.3)
     driver.execute_script("arguments[0].click();", element)
@@ -58,34 +57,98 @@ def click_ui5(element):
         pass
 
 # =============================================
-# PROCESO PRINCIPAL
+# FUNCIÓN ESPERAR DESCARGA
 # =============================================
 
-try:
-    print("🚀 Iniciando")
-    driver.get("https://www.metrogas.com.ar/consulta-y-paga-tu-saldo/")
-    wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
-    print("✓ Página cargada")
+def esperar_y_renombrar_pdf(cliente):
+    print("⏳ Esperando descarga del PDF...")
+    inicio = time.time()
+    TIMEOUT = 60
 
-    # IFRAME
-    iframe = wait.until(
-        EC.presence_of_element_located(
-            (By.XPATH, "//iframe[contains(@src,'saldos.micuenta.metrogas.com.ar')]")
-        )
-    )
-    driver.switch_to.frame(iframe)
-    print("✓ Dentro del iframe")
+    # Archivos iniciales para detectar cambios
+    archivos_iniciales = set(os.listdir(CARPETA_DESCARGAS))
+
+    while time.time() - inicio < TIMEOUT:
+        archivos = os.listdir(CARPETA_DESCARGAS)
+
+        # En curso
+        en_descarga = [f for f in archivos if f.endswith(".crdownload")]
+
+        # PDFs descargados
+        pdfs = [f for f in archivos if f.lower().endswith(".pdf")]
+
+        # PDFs nuevos
+        pdfs_nuevos = [f for f in pdfs if f not in archivos_iniciales]
+
+        if not en_descarga and pdfs_nuevos:
+            pdfs_nuevos.sort(key=lambda x: os.path.getmtime(os.path.join(CARPETA_DESCARGAS, x)))
+            pdf_final = pdfs_nuevos[-1]
+
+            # Renombrar
+            fecha = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            nombre_nuevo = f"{cliente}_{fecha}.pdf"
+
+            os.rename(
+                os.path.join(CARPETA_DESCARGAS, pdf_final),
+                os.path.join(CARPETA_DESCARGAS, nombre_nuevo)
+            )
+
+            print(f"📄 PDF guardado como {nombre_nuevo}")
+            return True
+
+        time.sleep(1)
+
+    print("❌ No se detectó PDF descargado")
+    return False
+
+# =============================================
+# LEER EXCEL
+# =============================================
+
+df = pd.read_excel(EXCEL_PATH)
+
+# Asegurar coincidencia exacta del nombre de columna
+columna_correcta = [col for col in df.columns if col.strip().lower() == "numero de cliente"]
+if not columna_correcta:
+    print("❌ No se encontró la columna 'Numero de Cliente' en el Excel")
+    print("Columnas disponibles:", list(df.columns))
+    exit()
+
+col = columna_correcta[0]
+lista_clientes = df[col].astype(str).tolist()
+
+# =============================================
+# ABRIR WEB
+# =============================================
+
+driver.get("https://www.metrogas.com.ar/consulta-y-paga-tu-saldo/")
+wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+print("🚀 Página abierta")
+
+# Entrar al iframe
+iframe = wait.until(
+    EC.presence_of_element_located((By.XPATH, "//iframe[contains(@src,'saldos.micuenta.metrogas.com.ar')]"))
+)
+driver.switch_to.frame(iframe)
+
+# =============================================
+# INICIO DEL LOOP
+# =============================================
+
+for cliente in lista_clientes:
+
+    print("\n==============================")
+    print(f"➡ Procesando cliente: {cliente}")
+    print("==============================")
 
     # INPUT CLIENTE
     input_cliente = wait.until(
-        EC.element_to_be_clickable(
-            (By.ID, "container-ovWebAbierta---Main--inputCustNumId-inner")
-        )
+        EC.element_to_be_clickable((By.ID, "container-ovWebAbierta---Main--inputCustNumId-inner"))
     )
     input_cliente.clear()
-    input_cliente.send_keys(NUMERO_CLIENTE)
-    print(f"✓ Número ingresado: {NUMERO_CLIENTE}")
+    input_cliente.send_keys(cliente)
 
+    # Disparar eventos UI5
     driver.execute_script("""
         var input = document.getElementById('container-ovWebAbierta---Main--inputCustNumId-inner');
         input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -95,60 +158,45 @@ try:
     time.sleep(1)
 
     # BOTÓN BUSCAR
-    print("🔍 Click en botón Buscar...")
-
     boton_buscar = wait.until(
         EC.element_to_be_clickable((By.ID, "container-ovWebAbierta---Main--idButtonSearch-inner"))
     )
     click_ui5(boton_buscar)
-    print("✓ Click Buscar OK")
+    print("🔍 Buscar clickeado")
 
-    # ESPERA DE CARGA
+    # Esperar carga
     try:
         wait.until_not(EC.presence_of_element_located((By.CLASS_NAME, "sapUiLocalBusyIndicator")))
     except:
         pass
 
-    print("✓ Datos cargados correctamente")
+    # BOTÓN ICONO PDF EN TABLA
+    print("🧾 Click en icono PDF de la tabla…")
+    XPATH_PDF = "//button[contains(@id,'idTableDebts') and contains(@id,'-0')]"
 
-    # BOTÓN PDF
-    print("🖨 Click en botón PDF…")
-
-    boton_pdf = wait.until(
-        EC.element_to_be_clickable((By.ID, "container-ovWebAbierta---Main--idDebtPDFButton-inner"))
-    )
+    boton_pdf = wait.until(EC.element_to_be_clickable((By.XPATH, XPATH_PDF)))
     click_ui5(boton_pdf)
-    print("✓ PDF clickeado (inner)")
 
     time.sleep(2)
 
     # BOTÓN DESCARGAR
-    print("⬇ Buscando botón 'Descargar' (ID variable)…")
+    print("⬇ Botón DESCARGAR…")
+    XPATH_DESCARGAR = "//bdi[contains(text(),'Descargar')]/ancestor::button"
 
-    XPATH_DESCARGAR = "//bdi[contains(text(), 'Descargar')]/ancestor::button"
     boton_descargar = wait.until(EC.element_to_be_clickable((By.XPATH, XPATH_DESCARGAR)))
-
     click_ui5(boton_descargar)
-    print("✅ Botón DESCARGAR presionado")
 
-    # =============================================
-    # CAPTURA NUEVA PESTAÑA
-    # =============================================
+    # ESPERAR Y RENOMBRAR PDF AUTOMÁTICAMENTE
+    esperar_y_renombrar_pdf(cliente)
 
-    print("📄 Esperando nueva pestaña con PDF…")
-    time.sleep(2)
+    # BOTÓN "NUEVA CONSULTA"
+    print("🔄 Volver a 'Nueva consulta'...")
+    XPATH_NUEVA = "//bdi[contains(text(), 'Nueva consulta')]/ancestor::button"
 
-    if len(driver.window_handles) > 1:
-        driver.switch_to.window(driver.window_handles[-1])
-        print("📄 PDF abierto en nueva pestaña")
-    else:
-        print("❗ No se abrió pestaña nueva, pero el PDF puede estar descargándose")
+    boton_nueva = wait.until(EC.element_to_be_clickable((By.XPATH, XPATH_NUEVA)))
+    click_ui5(boton_nueva)
 
-except Exception as e:
-    print(f"\n❌ ERROR: {e}")
+    time.sleep(1)
 
-finally:
-    print("\n⏸ Dejando el navegador abierto 30s…")
-    time.sleep(30)
-    driver.quit()
-    print("✓ Navegador cerrado")
+print("\n🎉 PROCESO COMPLETADO CON ÉXITO")
+driver.quit()
