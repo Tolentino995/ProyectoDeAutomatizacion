@@ -10,6 +10,42 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
+# ================================
+# GOOGLE DRIVE (TOKEN PERSISTENTE)
+# ================================
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
+
+CREDENCIALES = "credentials_modulo.json"
+ID_CARPETA_DRIVE = "1BCb9JXw17Eix4Ux2BIzN1ok50lgFLb_H"   # ← tu carpeta de Drive
+
+def login_drive():
+    gauth = GoogleAuth()
+    GoogleAuth.DEFAULT_SETTINGS['client_config_file'] = CREDENCIALES
+
+    gauth.LoadCredentialsFile(CREDENCIALES)
+
+    if gauth.credentials is None:
+        gauth.LocalWebserverAuth(port_numbers=[8092])
+    elif gauth.access_token_expired:
+        gauth.Refresh()
+    else:
+        gauth.Authorize()
+
+    gauth.SaveCredentialsFile(CREDENCIALES)
+    return GoogleDrive(gauth)
+
+def subir_a_drive(ruta_archivo, id_folder=ID_CARPETA_DRIVE):
+    drive = login_drive()
+    archivo_drive = drive.CreateFile({
+        "parents": [{"id": id_folder}],
+        "title": os.path.basename(ruta_archivo)
+    })
+    archivo_drive.SetContentFile(ruta_archivo)
+    archivo_drive.Upload()
+    print(f"📤 Subido a Drive: {ruta_archivo}")
+
+
 # =============================================
 # CONFIGURACIÓN
 # =============================================
@@ -65,35 +101,32 @@ def esperar_y_renombrar_pdf(cliente):
     inicio = time.time()
     TIMEOUT = 60
 
-    # Archivos iniciales para detectar cambios
     archivos_iniciales = set(os.listdir(CARPETA_DESCARGAS))
 
     while time.time() - inicio < TIMEOUT:
         archivos = os.listdir(CARPETA_DESCARGAS)
 
-        # En curso
         en_descarga = [f for f in archivos if f.endswith(".crdownload")]
-
-        # PDFs descargados
         pdfs = [f for f in archivos if f.lower().endswith(".pdf")]
-
-        # PDFs nuevos
         pdfs_nuevos = [f for f in pdfs if f not in archivos_iniciales]
 
         if not en_descarga and pdfs_nuevos:
             pdfs_nuevos.sort(key=lambda x: os.path.getmtime(os.path.join(CARPETA_DESCARGAS, x)))
             pdf_final = pdfs_nuevos[-1]
 
-            # Renombrar
             fecha = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             nombre_nuevo = f"{cliente}_{fecha}.pdf"
 
-            os.rename(
-                os.path.join(CARPETA_DESCARGAS, pdf_final),
-                os.path.join(CARPETA_DESCARGAS, nombre_nuevo)
-            )
+            ruta_pdf = os.path.join(CARPETA_DESCARGAS, pdf_final)
+            ruta_final = os.path.join(CARPETA_DESCARGAS, nombre_nuevo)
+
+            os.rename(ruta_pdf, ruta_final)
 
             print(f"📄 PDF guardado como {nombre_nuevo}")
+
+            # 📤 SUBIR A GOOGLE DRIVE
+            subir_a_drive(ruta_final)
+
             return True
 
         time.sleep(1)
